@@ -182,3 +182,9 @@ if st.button("Build Website", type="primary"):
                     content = f.read()
                 with st.expander(filename):
                     st.code(content, language="html" if filename.endswith((".html", ".css", ".js")) else "python")
+                    st.download_button(
+                        label=f"Download {filename}",
+                        data=content,
+                        file_name=filename,
+                        key=f"download_{filename}"
+                    )
