@@ -3,4 +3,4 @@ crewai
 crewai-tools
 python-dotenv
 pydantic
-google-generativeai
+google-genai
