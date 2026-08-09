@@ -7,6 +7,16 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
+
+def get_api_key():
+    key = os.getenv("GEMINI_API_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        return None
+
 OUTPUT_DIR = "generated_website"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -29,7 +39,7 @@ class FileWriterTool(BaseTool):
 
 
 def build_crew(user_input: str):
-    llm = LLM(model="gemini/gemini-2.5-pro", api_key=os.getenv("GEMINI_API_KEY"))
+    llm = LLM(model="gemini/gemini-2.5-pro", api_key=GEMINI_API_KEY())
     file_writer = FileWriterTool()
 
     analyst_agent = Agent(
