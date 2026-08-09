@@ -39,7 +39,7 @@ class FileWriterTool(BaseTool):
 
 
 def build_crew(user_input: str):
-    llm = LLM(model="gemini/gemini-2.5-pro", api_key=get_api_key())
+    llm = LLM(model="gemini/gemini-2.5-flash", api_key=get_api_key())
     file_writer = FileWriterTool()
 
     analyst_agent = Agent(
