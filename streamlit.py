@@ -1,4 +1,7 @@
 import os
+import io
+import zipfile
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, Process, LLM
@@ -16,6 +19,17 @@ def get_api_key():
         return st.secrets["GEMINI_API_KEY"]
     except Exception:
         return None
+
+
+def get_netlify_token():
+    token = os.getenv("NETLIFY_API_TOKEN")
+    if token:
+        return token
+    try:
+        return st.secrets["NETLIFY_API_TOKEN"]
+    except Exception:
+        return None
+
 
 OUTPUT_DIR = "generated_website"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -147,9 +161,54 @@ def build_crew(user_input: str):
     )
 
 
+def zip_static_files(output_dir):
+    """Zip only the static frontend files (html/css/js) — that's all Netlify can host."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for filename in os.listdir(output_dir):
+            if filename.endswith((".html", ".css", ".js")):
+                filepath = os.path.join(output_dir, filename)
+                zf.write(filepath, arcname=filename)
+    buffer.seek(0)
+    return buffer
+
+
+def deploy_to_netlify(output_dir):
+    """
+    Deploys the generated_website folder as a zip to Netlify's 'deploy without git' endpoint.
+    Netlify creates a brand new site + live URL from the zip in one call.
+    Requires a free Netlify Personal Access Token (NETLIFY_API_TOKEN).
+    """
+    token = get_netlify_token()
+    if not token:
+        return None, "Missing NETLIFY_API_TOKEN. Get a free token at app.netlify.com > User settings > Applications > Personal access tokens, then add it to .env or Streamlit secrets."
+
+    zip_buffer = zip_static_files(output_dir)
+
+    try:
+        response = requests.post(
+            "https://api.netlify.com/api/v1/sites",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/zip"
+            },
+            data=zip_buffer.getvalue(),
+            timeout=60
+        )
+    except requests.RequestException as e:
+        return None, f"Could not reach Netlify: {e}"
+
+    if response.status_code not in (200, 201):
+        return None, f"Netlify deploy failed ({response.status_code}): {response.text}"
+
+    data = response.json()
+    live_url = data.get("ssl_url") or data.get("url")
+    return live_url, None
+
+
 st.set_page_config(page_title="AI Website Builder", page_icon="🤖")
 st.title("AI Website Builder Agent")
-st.write("Describe the website you want. 4 agents will plan, design and build it.")
+st.write("Describe the website you want. 4 agents will plan, design, build, and deploy it live.")
 
 user_input = st.text_area(
     "Website description",
@@ -162,29 +221,41 @@ if st.button("Build Website", type="primary"):
     else:
         with st.spinner("Agents working... this can take a minute"):
             crew = build_crew(user_input)
-            result = crew.kickoff()
-
-        st.success("Done")
-        st.subheader("Final Output")
-        st.write(result)
+            crew.kickoff()
 
         index_path = os.path.join(OUTPUT_DIR, "index.html")
-        if os.path.exists(index_path):
-            st.subheader("Live Preview")
-            with open(index_path, "r", encoding="utf-8") as f:
-                html_code = f.read()
-            st.components.v1.html(html_code, height=600, scrolling=True)
+        if not os.path.exists(index_path):
+            st.error("The agents didn't produce an index.html file. Check your crew output above.")
+        else:
+            with st.spinner("Deploying your website to a live link..."):
+                live_url, error = deploy_to_netlify(OUTPUT_DIR)
 
-            st.subheader("Generated Files")
-            for filename in os.listdir(OUTPUT_DIR):
-                filepath = os.path.join(OUTPUT_DIR, filename)
-                with open(filepath, "r", encoding="utf-8") as f:
-                    content = f.read()
-                with st.expander(filename):
-                    st.code(content, language="html" if filename.endswith((".html", ".css", ".js")) else "python")
-                    st.download_button(
-                        label=f"Download {filename}",
-                        data=content,
-                        file_name=filename,
-                        key=f"download_{filename}"
-                    )
+            if error:
+                st.error(error)
+                st.info("Deployment failed, so here's the generated code instead.")
+                with open(index_path, "r", encoding="utf-8") as f:
+                    st.components.v1.html(f.read(), height=600, scrolling=True)
+                for filename in os.listdir(OUTPUT_DIR):
+                    filepath = os.path.join(OUTPUT_DIR, filename)
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    with st.expander(filename):
+                        st.code(content, language="html" if filename.endswith((".html", ".css", ".js")) else "python")
+            else:
+                st.success("Your website is live!")
+                st.markdown(f"### 🔗 [{live_url}]({live_url})")
+                st.caption("Note: only the frontend (HTML/CSS/JS) is deployed. If the backend agent generated app.py, that needs a separate host like Render or Railway since Netlify only serves static files.")
+
+                with st.expander("View generated files (optional)"):
+                    for filename in os.listdir(OUTPUT_DIR):
+                        filepath = os.path.join(OUTPUT_DIR, filename)
+                        with open(filepath, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        st.write(f"**{filename}**")
+                        st.code(content, language="html" if filename.endswith((".html", ".css", ".js")) else "python")
+                        st.download_button(
+                            label=f"Download {filename}",
+                            data=content,
+                            file_name=filename,
+                            key=f"download_{filename}"
+                        )
