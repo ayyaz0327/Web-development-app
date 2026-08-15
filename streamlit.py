@@ -1,6 +1,11 @@
 import os
 import io
 import zipfile
+import socket
+import functools
+import threading
+import http.server
+import socketserver
 import requests
 import streamlit as st
 from dotenv import load_dotenv
@@ -161,6 +166,32 @@ def build_crew(user_input: str):
     )
 
 
+def get_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+def start_local_server(directory):
+    """
+    Serves the generated_website folder over http.server on a free local port.
+    Runs once per Streamlit session (reused across reruns via session_state) so
+    we don't try to bind the same port twice and crash.
+    """
+    if "local_server_port" in st.session_state:
+        return st.session_state.local_server_port
+
+    port = get_free_port()
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
+    httpd = socketserver.TCPServer(("", port), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+
+    st.session_state.local_server_port = port
+    st.session_state.local_server_httpd = httpd
+    return port
+
+
 def zip_static_files(output_dir):
     """Zip only the static frontend files (html/css/js) — that's all Netlify can host."""
     buffer = io.BytesIO()
@@ -215,6 +246,14 @@ user_input = st.text_area(
     placeholder="A portfolio website for a photographer, dark theme, gallery and contact form"
 )
 
+view_mode = st.radio(
+    "How do you want to see the result?",
+    ["Preview locally (localhost)", "Deploy live (Netlify link)"],
+    help="Local preview only works when you run this app on your own machine with `streamlit run app.py`. "
+         "It will NOT work if this app itself is hosted on Streamlit Cloud, because 'localhost' would then "
+         "point to Streamlit's server, not your browser. Use Netlify for anything you need to share or is deployed remotely."
+)
+
 if st.button("Build Website", type="primary"):
     if not user_input.strip():
         st.warning("Type a description first.")
@@ -226,6 +265,12 @@ if st.button("Build Website", type="primary"):
         index_path = os.path.join(OUTPUT_DIR, "index.html")
         if not os.path.exists(index_path):
             st.error("The agents didn't produce an index.html file. Check your crew output above.")
+        elif view_mode == "Preview locally (localhost)":
+            port = start_local_server(os.path.abspath(OUTPUT_DIR))
+            local_url = f"http://localhost:{port}"
+            st.success("Your website is running locally!")
+            st.markdown(f"### 🔗 [{local_url}]({local_url})")
+            st.caption("This link only works on this machine, in this session. It stops when the app process stops.")
         else:
             with st.spinner("Deploying your website to a live link..."):
                 live_url, error = deploy_to_netlify(OUTPUT_DIR)
