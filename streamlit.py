@@ -215,9 +215,16 @@ def build_crew(user_input: str, output_dir: str):
     )
 
 
+class ReusableTCPServer(socketserver.TCPServer):
+    # Without this, a quickly-restarted server can fail to rebind the same
+    # port (address still in TIME_WAIT) and fail SILENTLY in the thread.
+    allow_reuse_address = True
+
+
 def get_free_port():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
@@ -226,19 +233,24 @@ def start_local_server(directory, website_id):
     Serves a specific website's folder over http.server on a free local port.
     One server per website_id, reused across reruns via session_state, so
     switching between websites in the sidebar doesn't try to rebind ports.
+    Returns (port, error_message).
     """
     servers = st.session_state.setdefault("local_servers", {})
     if website_id in servers:
-        return servers[website_id]["port"]
+        return servers[website_id]["port"], None
 
     port = get_free_port()
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=directory)
-    httpd = socketserver.TCPServer(("", port), handler)
+    try:
+        httpd = ReusableTCPServer(("127.0.0.1", port), handler)
+    except OSError as e:
+        return None, f"Could not start local server on port {port}: {e}"
+
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
 
     servers[website_id] = {"port": port, "httpd": httpd}
-    return port
+    return port, None
 
 
 def zip_static_files(output_dir):
@@ -411,11 +423,15 @@ else:
 
         with col1:
             if st.button("▶️ Preview locally"):
-                port = start_local_server(os.path.abspath(output_dir), entry["id"])
-                local_url = f"http://localhost:{port}"
-                st.success("Running locally!")
-                st.markdown(f"🔗 [{local_url}]({local_url})")
-                st.caption("Only works when this app itself is run locally, not on Streamlit Cloud.")
+                port, error = start_local_server(os.path.abspath(output_dir), entry["id"])
+                if error:
+                    st.error(error)
+                else:
+                    local_url = f"http://127.0.0.1:{port}"
+                    st.success("Running locally!")
+                    st.markdown(f"🔗 [{local_url}]({local_url})")
+                    st.caption("Only works when this app itself is run locally, not on Streamlit Cloud. "
+                               "If the link refuses to connect, click Preview locally again — a new server will start.")
 
         with col2:
             if entry.get("live_url"):
